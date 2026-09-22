@@ -1,0 +1,79 @@
+@import "tailwindcss";
+@import "mapbox-gl/dist/mapbox-gl.css";
+
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", sans-serif;
+  --color-brand-50: #eef6ff;
+  --color-brand-100: #d9eaff;
+  --color-brand-200: #bcdaff;
+  --color-brand-300: #8ec2ff;
+  --color-brand-400: #599fff;
+  --color-brand-500: #3378ff;
+  --color-brand-600: #1b56f5;
+  --color-brand-700: #1442e1;
+  --color-brand-800: #1736b6;
+  --color-brand-900: #19328f;
+  --color-brand-950: #142057;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+  font-family: var(--font-sans);
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(203 213 225) transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(203 213 225);
+  border-radius: 9999px;
+}
+
+/* Mapbox popup — match the app's card styling. */
+.mapboxgl-popup-content {
+  @apply rounded-xl border border-slate-200 p-0 shadow-lg;
+  overflow: hidden;
+}
+.mapboxgl-popup-tip {
+  display: none;
+}
+.mapboxgl-popup-close-button {
+  @apply right-1 top-1 h-6 w-6 rounded-full text-slate-500;
+}
+.mapboxgl-popup-close-button:hover {
+  @apply bg-slate-100 text-slate-900;
+}
+.mapboxgl-ctrl-logo,
+.mapboxgl-ctrl-attrib {
+  opacity: 0.85;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-up {
+  animation: fade-up 180ms ease-out both;
+}
