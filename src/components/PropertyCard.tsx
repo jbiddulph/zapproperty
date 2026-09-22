@@ -1,0 +1,103 @@
+"use client";
+
+import { bedroomsLabel, humanize, occupancyTone, toneClasses } from "@/lib/format";
+import type { Property } from "@/lib/types";
+
+interface PropertyCardProps {
+  property: Property;
+  selected: boolean;
+  hovered: boolean;
+  onSelect: () => void;
+  onHover: (hovering: boolean) => void;
+}
+
+export function PropertyCard({ property, selected, hovered, onSelect, onHover }: PropertyCardProps) {
+  const tone = occupancyTone(property.occupancyStatus);
+  const beds = bedroomsLabel(property.bedrooms);
+
+  return (
+    <li data-property-id={property.id}>
+      <button
+        type="button"
+        onClick={onSelect}
+        onMouseEnter={() => onHover(true)}
+        onMouseLeave={() => onHover(false)}
+        onFocus={() => onHover(true)}
+        onBlur={() => onHover(false)}
+        aria-pressed={selected}
+        className={`group flex w-full gap-3 rounded-xl border p-3 text-left transition ${
+          selected
+            ? "border-brand-400 bg-brand-50/60 shadow-sm ring-2 ring-brand-100"
+            : hovered
+              ? "border-slate-300 bg-white shadow-sm"
+              : "border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm"
+        }`}
+      >
+        <PropertyThumb property={property} />
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <h3 className="truncate text-sm font-semibold text-slate-900">{property.name}</h3>
+            {property.occupancyStatus && (
+              <span
+                className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${toneClasses[tone]}`}
+              >
+                {humanize(property.occupancyStatus)}
+              </span>
+            )}
+          </div>
+
+          <p className="mt-0.5 truncate text-xs text-slate-500">{property.fullAddress || "No address on record"}</p>
+
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
+            {beds && <span className="font-medium text-slate-800">{beds}</span>}
+            {property.propertyType && <span>{humanize(property.propertyType)}</span>}
+            {property.tenure && <span>{humanize(property.tenure)}</span>}
+            {property.reference && <span className="font-mono text-[11px] text-slate-400">{property.reference}</span>}
+          </div>
+
+          {!property.coordinates && (
+            <p className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-amber-700">
+              <svg className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+                <path
+                  fillRule="evenodd"
+                  d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Address could not be mapped
+            </p>
+          )}
+        </div>
+      </button>
+    </li>
+  );
+}
+
+function PropertyThumb({ property }: { property: Property }) {
+  if (property.coverPhotoUrl) {
+    return (
+      // Photos stream through the same-origin proxy with unknown dimensions,
+      // so a plain <img> is used rather than next/image.
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={property.coverPhotoUrl}
+        alt=""
+        loading="lazy"
+        className="h-16 w-20 shrink-0 rounded-lg bg-slate-100 object-cover"
+      />
+    );
+  }
+
+  return (
+    <div className="flex h-16 w-20 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-400">
+      <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden>
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="M2.25 12l8.954-8.955a1.126 1.126 0 011.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75"
+        />
+      </svg>
+    </div>
+  );
+}
