@@ -3,7 +3,7 @@
 import mapboxgl from "mapbox-gl";
 import { useEffect, useRef, useState } from "react";
 import type { Bounds } from "@/lib/filters";
-import { bedroomsLabel, escapeHtml, humanize, occupancyTone, toneHex } from "@/lib/format";
+import { escapeHtml, humanize, occupancyTone, roomsSummary, toneHex } from "@/lib/format";
 import type { LngLat, Property } from "@/lib/types";
 
 export interface FocusRequest {
@@ -50,7 +50,12 @@ function toGeoJSON(properties: Property[]): GeoJSON.FeatureCollection<GeoJSON.Po
           id: p.id,
           name: p.name,
           subtitle: p.fullAddress || p.reference || "",
-          meta: [bedroomsLabel(p.bedrooms), p.propertyType ? humanize(p.propertyType) : null, p.occupancyStatus ? humanize(p.occupancyStatus) : null]
+          meta: [
+            p.listing?.priceLabel ?? null,
+            roomsSummary(p),
+            p.propertyType ? humanize(p.propertyType) : null,
+            p.occupancyStatus ? humanize(p.occupancyStatus) : null,
+          ]
             .filter(Boolean)
             .join(" · "),
           color: toneHex[occupancyTone(p.occupancyStatus)],

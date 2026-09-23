@@ -2,16 +2,23 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  availabilityLabel,
   bedroomsLabel,
+  councilTaxLabel,
+  epcClasses,
   formatDate,
+  formatMoney,
+  furnishingLabel,
   humanize,
   isOverdue,
+  listingTypeClasses,
+  listingTypeLabel,
   occupancyTone,
   priorityClasses,
   statusClasses,
   toneClasses,
 } from "@/lib/format";
-import type { Property, PropertyDetail as PropertyDetailData, PropertyTask } from "@/lib/types";
+import type { Property, PropertyDetail as PropertyDetailData, PropertyListing, PropertyTask } from "@/lib/types";
 
 interface PropertyDetailProps {
   property: Property;
@@ -77,8 +84,14 @@ export function PropertyDetail({ property, demo, onClose, onLocate }: PropertyDe
   }, [onClose]);
 
   const data = detail.data ?? property;
-  const photos = detail.data?.photos ?? [];
+  // Photo records whose file is missing on ZapTask's storage 404 through the
+  // proxy; drop them from the gallery once the browser reports the failure.
+  const [brokenPhotoIds, setBrokenPhotoIds] = useState<number[]>([]);
+  const photos = (detail.data?.photos ?? []).filter((photo) => !brokenPhotoIds.includes(photo.id));
+  const markPhotoBroken = useCallback((id: number) => setBrokenPhotoIds((ids) => (ids.includes(id) ? ids : [...ids, id])), []);
   const tone = occupancyTone(data.occupancyStatus);
+  const listing = data.listing;
+  const listingType = listing?.listingType ?? null;
 
   return (
     <aside
@@ -89,6 +102,11 @@ export function PropertyDetail({ property, demo, onClose, onLocate }: PropertyDe
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="truncate text-base font-semibold text-slate-900">{data.name}</h2>
+            {listingType && (
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${listingTypeClasses[listingType]}`}>
+                {listingTypeLabel(listingType)}
+              </span>
+            )}
             {data.occupancyStatus && (
               <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${toneClasses[tone]}`}>
                 {humanize(data.occupancyStatus)}
@@ -96,6 +114,14 @@ export function PropertyDetail({ property, demo, onClose, onLocate }: PropertyDe
             )}
           </div>
           <p className="mt-0.5 truncate text-xs text-slate-500">{data.fullAddress || "No address on record"}</p>
+          {listing?.priceLabel && (
+            <p className="mt-1 text-lg font-bold tracking-tight text-slate-900">
+              {listing.priceLabel}
+              {listing.depositAmount !== null && (
+                <span className="ml-2 text-xs font-normal text-slate-500">Deposit {formatMoney(listing.depositAmount)}</span>
+              )}
+            </p>
+          )}
         </div>
         <button
           type="button"
@@ -115,7 +141,9 @@ export function PropertyDetail({ property, demo, onClose, onLocate }: PropertyDe
           loading={detail.loading}
           active={activePhoto}
           onChange={setActivePhoto}
+          onBroken={markPhotoBroken}
           fallbackCover={property.coverPhotoUrl}
+          totalOnRecord={detail.data?.photos.length ?? 0}
         />
 
         <section className="px-4 py-4">
@@ -167,10 +195,20 @@ export function PropertyDetail({ property, demo, onClose, onLocate }: PropertyDe
             )}
           </div>
 
+          {!data.listed && (
+            <p className="mt-4 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
+              <span className="font-medium text-slate-700">Not published.</span> &ldquo;Show on ZapProperty&rdquo; is unticked
+              for this site in ZapTask; it is only visible because unlisted sites are enabled.
+            </p>
+          )}
+
           <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
             <Fact label="Property type" value={data.propertyType ? humanize(data.propertyType) : null} />
             <Fact label="Bedrooms" value={bedroomsLabel(data.bedrooms)} />
+            <Fact label="Bathrooms" value={data.bathrooms !== null ? String(data.bathrooms) : null} />
+            <Fact label="Reception rooms" value={data.receptions !== null ? String(data.receptions) : null} />
             <Fact label="Tenure" value={data.tenure ? humanize(data.tenure) : null} />
+            <Fact label="Furnishing" value={furnishingLabel(data.furnishing)} />
             <Fact label="Site status" value={humanize(data.status)} />
             <Fact label="Reference" value={data.reference} mono />
             <Fact label="ZapTask site ID" value={`#${data.id}`} mono />
@@ -196,6 +234,8 @@ export function PropertyDetail({ property, demo, onClose, onLocate }: PropertyDe
           </div>
         </section>
 
+        {listing && <ListingSection listing={listing} />}
+
         <TasksSection
           propertyId={property.id}
           state={tasks}
@@ -217,31 +257,126 @@ function Fact({ label, value, mono = false }: { label: string; value: string | n
   );
 }
 
+const DESCRIPTION_PREVIEW_CHARS = 420;
+
+function ListingSection({ listing }: { listing: PropertyListing }) {
+  const [expanded, setExpanded] = useState(false);
+  const availability = availabilityLabel(listing.availableFrom);
+  const keyInfo: { label: string; value: React.ReactNode }[] = [];
+
+  if (listing.depositAmount !== null) keyInfo.push({ label: "Deposit", value: formatMoney(listing.depositAmount) });
+  if (listing.availableFrom) {
+    keyInfo.push({
+      label: "Available",
+      value: availability === "Available now" ? "Now" : `From ${formatDate(listing.availableFrom)}`,
+    });
+  }
+  if (listing.councilTaxBand) keyInfo.push({ label: "Council tax band", value: councilTaxLabel(listing.councilTaxBand) });
+  if (listing.epcRating) {
+    keyInfo.push({
+      label: "EPC rating",
+      value: (
+        <span className={`inline-block rounded px-1.5 py-px text-xs font-bold leading-5 ${epcClasses(listing.epcRating)}`}>
+          {listing.epcRating}
+        </span>
+      ),
+    });
+  }
+  if (listing.broadband) keyInfo.push({ label: "Broadband", value: listing.broadband });
+
+  const description = listing.description ?? "";
+  const long = description.length > DESCRIPTION_PREVIEW_CHARS;
+  const shown = expanded || !long ? description : `${description.slice(0, DESCRIPTION_PREVIEW_CHARS).trimEnd()}…`;
+
+  if (keyInfo.length === 0 && listing.keyFeatures.length === 0 && !description) return null;
+
+  return (
+    <section className="border-t border-slate-200 px-4 py-4">
+      {keyInfo.length > 0 && (
+        <>
+          <h3 className="text-sm font-semibold text-slate-900">Key information</h3>
+          <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+            {keyInfo.map((item) => (
+              <div key={item.label}>
+                <dt className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{item.label}</dt>
+                <dd className="mt-0.5 text-slate-900">{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </>
+      )}
+
+      {listing.keyFeatures.length > 0 && (
+        <div className={keyInfo.length > 0 ? "mt-4" : ""}>
+          <h3 className="text-sm font-semibold text-slate-900">Key features</h3>
+          <ul className="mt-2 grid gap-1.5 text-sm text-slate-700 sm:grid-cols-2">
+            {listing.keyFeatures.map((feature, index) => (
+              <li key={`${index}-${feature}`} className="flex items-start gap-2">
+                <svg className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" viewBox="0 0 20 20" fill="currentColor" aria-hidden>
+                  <path
+                    fillRule="evenodd"
+                    d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+                <span>{feature}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {description && (
+        <div className={keyInfo.length > 0 || listing.keyFeatures.length > 0 ? "mt-4" : ""}>
+          <h3 className="text-sm font-semibold text-slate-900">Description</h3>
+          <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-slate-700">{shown}</p>
+          {long && (
+            <button
+              type="button"
+              onClick={() => setExpanded((e) => !e)}
+              className="mt-1.5 text-sm font-medium text-brand-700 hover:text-brand-800"
+            >
+              {expanded ? "Show less" : "Show full description"}
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PhotoGallery({
   photos,
   loading,
   active,
   onChange,
+  onBroken,
   fallbackCover,
+  totalOnRecord,
 }: {
   photos: PropertyDetailData["photos"];
   loading: boolean;
   active: number;
   onChange: (index: number) => void;
+  onBroken: (id: number) => void;
   fallbackCover: string | null;
+  totalOnRecord: number;
 }) {
   if (loading && photos.length === 0) {
     return <div className="aspect-[16/9] w-full animate-pulse bg-slate-100" />;
   }
 
   if (photos.length === 0) {
-    if (fallbackCover) {
+    // Every photo on record failed to load — the files are missing on
+    // ZapTask's storage, so don't retry the cover either.
+    const filesMissing = totalOnRecord > 0;
+    if (fallbackCover && !filesMissing) {
       // eslint-disable-next-line @next/next/no-img-element
       return <img src={fallbackCover} alt="" className="aspect-[16/9] w-full bg-slate-100 object-cover" />;
     }
     return (
       <div className="flex aspect-[16/9] w-full items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200 text-slate-400">
-        <div className="text-center">
+        <div className="px-6 text-center">
           <svg className="mx-auto h-8 w-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden>
             <path
               strokeLinecap="round"
@@ -249,7 +384,17 @@ function PhotoGallery({
               d="M2.25 12l8.954-8.955a1.126 1.126 0 011.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75"
             />
           </svg>
-          <p className="mt-1 text-xs">No listing photos</p>
+          {filesMissing ? (
+            <>
+              <p className="mt-1 text-xs font-medium text-slate-500">Photos unavailable</p>
+              <p className="mt-0.5 text-[11px] text-slate-400">
+                ZapTask lists {totalOnRecord} {totalOnRecord === 1 ? "photo" : "photos"} but the files could not be loaded.
+                Re-upload them in ZapTask.
+              </p>
+            </>
+          ) : (
+            <p className="mt-1 text-xs">No listing photos</p>
+          )}
         </div>
       </div>
     );
@@ -263,6 +408,7 @@ function PhotoGallery({
       <img
         src={current.url}
         alt={current.caption ?? ""}
+        onError={() => onBroken(current.id)}
         className="aspect-[16/9] w-full bg-slate-100 object-cover"
       />
       {(current.caption || photos.length > 1) && (
@@ -286,7 +432,13 @@ function PhotoGallery({
               }`}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={photo.url} alt="" loading="lazy" className="h-full w-full bg-slate-100 object-cover" />
+              <img
+                src={photo.url}
+                alt=""
+                loading="lazy"
+                onError={() => onBroken(photo.id)}
+                className="h-full w-full bg-slate-100 object-cover"
+              />
             </button>
           ))}
         </div>
