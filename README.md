@@ -129,7 +129,7 @@ Any Node host works; on Vercel, import the repo and add the environment variable
 
 ## Troubleshooting
 
-**A site I published in ZapTask is not showing.** `GET /api/properties` reports how many sites were held back in `meta.unlisted`, and the list header shows "· N unpublished". Check, in order:
+**A site I published in ZapTask is not showing.** `GET /api/properties` reports how many sites were held back in `meta.unlisted`. Check, in order:
 
 1. **Show on ZapProperty** is ticked *and saved* on the site in ZapTask. Then hit the refresh button in the header — the list is cached for a short while.
 2. `meta.scope` is `platform`. With a **company key** (`zt_live_…`, `meta.scope: "company"`) only that company's sites are visible, however other companies' sites are flagged — the fix is to switch to the portal key (see above). If `meta.total` is `0` and `meta.unlisted` matches the number of sites you expect, the key is fine and only the checkbox is the problem.
