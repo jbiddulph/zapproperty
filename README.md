@@ -108,3 +108,15 @@ npm run typecheck  # tsc --noEmit
 ## Deploying
 
 Any Node host works; on Vercel, import the repo and add the environment variables above. `ZAPTASK_API_KEY` and `MAPBOX_SERVER_TOKEN` should be server-only secrets; `NEXT_PUBLIC_MAPBOX_TOKEN` is public by design — restrict it to your domain in the Mapbox dashboard.
+
+## Troubleshooting
+
+**A site I published in ZapTask is not showing.** `GET /api/properties` reports how many sites were held back in `meta.unlisted`, and the list header shows "· N unpublished". Check, in order:
+
+1. **Show on ZapProperty** is ticked *and saved* on the site in ZapTask. Then hit the refresh button in the header — the list is cached for a short while.
+2. The site belongs to the **same company as the API key**. The Platform API is scoped to the company that issued the `zt_live_*` key; a site created under another company is invisible to it, however it is flagged. If `meta.total` is `0` and `meta.unlisted` matches the number of sites you expect, the key is fine and only the checkbox is the problem; if the counts are lower than expected, the site is in a different company.
+3. The site is **active** in ZapTask (inactive/archived sites are never returned by the API), and `ZAPTASK_ASSET_TYPE` is blank or matches the site's type.
+
+**Photos show as "Photos unavailable".** ZapTask has photo *records* but the *files* are gone. This happens when ZapTask stores uploads on a local disk on a host with an ephemeral filesystem (e.g. Heroku), which is wiped on every deploy. Switch ZapTask's filesystem disk to persistent object storage (S3, Supabase Storage…) and re-upload the photos; ZapProperty needs no change.
+
+**`525` / "No such app" from `app.zaptask.co.uk` or `api.zaptask.co.uk`.** A Cloudflare 525 means the TLS handshake with the origin failed — usually because the hostname is proxied by Cloudflare but not attached to the Heroku app (`heroku domains:add app.zaptask.co.uk`, then point the Cloudflare CNAME at the DNS target Heroku prints). Until it is fixed, set `ZAPTASK_BASE_URL` to a hostname that does reach ZapTask (e.g. `https://www.zaptask.co.uk`) and remove the override afterwards.
