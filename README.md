@@ -73,7 +73,7 @@ Company C ─ Sites ──┘    (show_on_zapproperty = true)         │
 | `GET /api/v1/zapproperty/listings/{id}/tasks` | Tasks for a property |
 | `POST /api/v1/zapproperty/listings/{id}/tasks` | "New task" form (`source: zapproperty`), created in the listing's company |
 
-To enable it on ZapTask: `php artisan zapproperty:key`, then `heroku config:set ZAPPROPERTY_API_KEY=<key>` (or the equivalent for your host) and set the same value as `ZAPTASK_API_KEY` here.
+To enable it on ZapTask: `php artisan zapproperty:key`, then `heroku config:set ZAPPROPERTY_API_KEY=<key>` (or the equivalent for your host) and set the same value as `ZAPTASK_API_KEY` here. Until the portal API has landed in ZapTask, the patch that adds it is in [`zaptask/`](zaptask/README.md).
 
 ### Company key (`zt_live_…`)
 
