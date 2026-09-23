@@ -18,8 +18,12 @@ export interface ZapTaskAsset {
   property?: {
     property_type?: string | null;
     bedrooms?: number | null;
+    bathrooms?: number | null;
+    receptions?: number | null;
     tenure?: string | null;
     occupancy_status?: string | null;
+    furnishing?: string | null;
+    listing?: ZapTaskListing;
   };
   photo_count?: number;
   cover_photo_url?: string | null;
@@ -34,6 +38,47 @@ export interface ZapTaskAsset {
   };
   created_at?: string;
   updated_at?: string;
+}
+
+/**
+ * Public-listing sections an estate agent can toggle in ZapTask. The keys
+ * mirror `PropertyListing::visibilityOptions()` on the platform; a missing key
+ * means "shown".
+ */
+export type ZapTaskListingVisibilityKey =
+  | "price"
+  | "property_type"
+  | "bedrooms"
+  | "bathrooms"
+  | "receptions"
+  | "tenure"
+  | "furnishing"
+  | "deposit"
+  | "available_from"
+  | "council_tax"
+  | "epc"
+  | "broadband"
+  | "features"
+  | "description";
+
+/** `property.listing` on an asset — the ZapProperty listing an agent fills in. */
+export interface ZapTaskListing {
+  show_on_zapproperty?: boolean;
+  listing_type?: "rent" | "sale" | string | null;
+  /** Decimal column: arrives as a string ("1750.00") or number. */
+  price_amount?: string | number | null;
+  price_qualifier?: string | null;
+  /** Pre-formatted by the platform, e.g. "£1,750 pcm" or "Offers over £450,000". */
+  price_label?: string | null;
+  deposit_amount?: string | number | null;
+  /** ISO date (YYYY-MM-DD). */
+  available_from?: string | null;
+  council_tax_band?: string | null;
+  epc_rating?: string | null;
+  broadband?: string | null;
+  key_features?: string[] | null;
+  description?: string | null;
+  visibility?: Partial<Record<ZapTaskListingVisibilityKey, boolean>> | null;
 }
 
 export interface ZapTaskAssetPhoto {

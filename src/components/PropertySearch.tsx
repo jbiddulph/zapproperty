@@ -190,6 +190,15 @@ export function PropertySearch({ status, mapboxToken, geocodeCountry }: Property
                   {data?.meta.unlocated ? (
                     <span className="text-amber-700"> · {data.meta.unlocated} unmapped</span>
                   ) : null}
+                  {data?.meta.unlisted ? (
+                    <span
+                      className="text-slate-400"
+                      title='Sites in ZapTask with "Show on ZapProperty" unticked are not displayed.'
+                    >
+                      {" "}
+                      · {data.meta.unlisted} unpublished
+                    </span>
+                  ) : null}
                 </>
               )}
             </span>

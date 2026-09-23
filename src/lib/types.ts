@@ -15,6 +15,34 @@ export interface PropertyAddress {
   country: string | null;
 }
 
+export type ListingType = "rent" | "sale";
+
+/**
+ * Estate-agent listing details entered in ZapTask. Fields the agent has
+ * hidden via the per-section visibility toggles are already nulled out
+ * server-side, so anything present here is safe to display.
+ */
+export interface PropertyListing {
+  listingType: ListingType | null;
+  priceAmount: number | null;
+  priceQualifier: string | null;
+  /** Display string, e.g. "£1,750 pcm", "Offers over £450,000", "POA". */
+  priceLabel: string | null;
+  /**
+   * Price normalised for sorting/filtering: monthly-equivalent for rentals
+   * (pw × 52 ÷ 12, pa ÷ 12), the asking figure for sales. Null when POA/unset.
+   */
+  comparablePrice: number | null;
+  depositAmount: number | null;
+  /** ISO date (YYYY-MM-DD). */
+  availableFrom: string | null;
+  councilTaxBand: string | null;
+  epcRating: string | null;
+  broadband: string | null;
+  keyFeatures: string[];
+  description: string | null;
+}
+
 export interface Property {
   id: number;
   name: string;
@@ -24,8 +52,15 @@ export interface Property {
   clientId: number | null;
   propertyType: string | null;
   bedrooms: number | null;
+  bathrooms: number | null;
+  receptions: number | null;
   tenure: string | null;
+  furnishing: string | null;
   occupancyStatus: string | null;
+  /** The agent's "Show on ZapProperty" checkbox in ZapTask. */
+  listed: boolean;
+  /** Null when the site has no listing details at all. */
+  listing: PropertyListing | null;
   address: PropertyAddress;
   fullAddress: string;
   coordinates: LngLat | null;
@@ -69,6 +104,10 @@ export interface PropertiesResponse {
     total: number;
     located: number;
     unlocated: number;
+    /** Sites skipped because "Show on ZapProperty" is unticked in ZapTask. */
+    unlisted: number;
+    /** True when unlisted sites are being included (ZAPTASK_INCLUDE_UNLISTED). */
+    includesUnlisted: boolean;
     source: "zaptask" | "demo";
     assetType: string | null;
     fetchedAt: string;
@@ -79,6 +118,10 @@ export interface PropertiesResponse {
       occupancyStatuses: string[];
       statuses: string[];
       types: string[];
+      listingTypes: ListingType[];
+      furnishings: string[];
+      /** Comparable price bounds per listing type, for the price inputs. */
+      priceRange: Partial<Record<ListingType, { min: number; max: number }>>;
     };
   };
 }

@@ -74,8 +74,11 @@ export function PropertyList({
       <div className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-500">
         {total === 0 ? (
           <>
-            <p className="font-medium text-slate-700">No property sites yet</p>
-            <p className="mt-1">Add sites in ZapTask (Sites) and they will appear here.</p>
+            <p className="font-medium text-slate-700">No published properties yet</p>
+            <p className="mt-1">
+              In ZapTask, open a site and tick <span className="font-medium text-slate-700">Show on ZapProperty</span>. It will
+              appear here within a minute (or use Refresh).
+            </p>
           </>
         ) : (
           <>

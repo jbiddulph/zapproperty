@@ -2,6 +2,11 @@
  * Presentation helpers shared by the list, map popups and detail drawer.
  */
 
+import { formatMoney } from "./listing";
+import type { ListingType, Property, PropertyListing } from "./types";
+
+export { formatMoney, formatPrice } from "./listing";
+
 export function humanize(value: string | null | undefined): string {
   if (!value) return "—";
   const spaced = value.replace(/[_-]+/g, " ").trim();
@@ -12,6 +17,97 @@ export function bedroomsLabel(bedrooms: number | null | undefined): string | nul
   if (bedrooms === null || bedrooms === undefined) return null;
   if (bedrooms === 0) return "Studio";
   return `${bedrooms} bed`;
+}
+
+export function bathroomsLabel(bathrooms: number | null | undefined): string | null {
+  if (bathrooms === null || bathrooms === undefined) return null;
+  return `${bathrooms} bath`;
+}
+
+export function receptionsLabel(receptions: number | null | undefined): string | null {
+  if (receptions === null || receptions === undefined) return null;
+  return `${receptions} reception${receptions === 1 ? "" : "s"}`;
+}
+
+export function listingTypeLabel(type: ListingType | null | undefined): string | null {
+  switch (type) {
+    case "rent":
+      return "To rent";
+    case "sale":
+      return "For sale";
+    default:
+      return null;
+  }
+}
+
+export const listingTypeClasses: Record<ListingType, string> = {
+  rent: "bg-sky-50 text-sky-700 ring-sky-600/20",
+  sale: "bg-violet-50 text-violet-700 ring-violet-600/20",
+};
+
+export function furnishingLabel(value: string | null | undefined): string | null {
+  switch (value) {
+    case "furnished":
+      return "Furnished";
+    case "part_furnished":
+      return "Part furnished";
+    case "unfurnished":
+      return "Unfurnished";
+    default:
+      return value ? humanize(value) : null;
+  }
+}
+
+export function councilTaxLabel(band: string | null | undefined): string | null {
+  if (!band) return null;
+  if (band === "not_available") return "Not available";
+  if (band === "exempt") return "Exempt";
+  return `Band ${band.toUpperCase()}`;
+}
+
+/** EPC ratings use the standard A (best) → G (worst) colour scale. */
+export function epcClasses(rating: string | null | undefined): string {
+  switch ((rating ?? "").toUpperCase()) {
+    case "A":
+      return "bg-emerald-600 text-white";
+    case "B":
+      return "bg-emerald-500 text-white";
+    case "C":
+      return "bg-lime-500 text-white";
+    case "D":
+      return "bg-yellow-400 text-slate-900";
+    case "E":
+      return "bg-orange-400 text-white";
+    case "F":
+      return "bg-orange-600 text-white";
+    case "G":
+      return "bg-rose-600 text-white";
+    default:
+      return "bg-slate-200 text-slate-700";
+  }
+}
+
+/** "Available now" once the date has passed, otherwise "Available from 28 Sep 2026". */
+export function availabilityLabel(availableFrom: string | null | undefined): string | null {
+  if (!availableFrom) return null;
+  const date = new Date(`${availableFrom.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return `Available from ${availableFrom}`;
+  return date.getTime() <= Date.now() ? "Available now" : `Available from ${formatDate(availableFrom)}`;
+}
+
+/** Deposit shown next to price on rentals: "Deposit £2,019". */
+export function depositLabel(listing: PropertyListing | null | undefined): string | null {
+  const amount = listing?.depositAmount;
+  if (amount === null || amount === undefined) return null;
+  return `Deposit ${formatMoney(amount)}`;
+}
+
+/** Compact "3 bed · 1 bath · 2 receptions" summary shared by cards, popups and the drawer. */
+export function roomsSummary(property: Pick<Property, "bedrooms" | "bathrooms" | "receptions">): string | null {
+  const parts = [bedroomsLabel(property.bedrooms), bathroomsLabel(property.bathrooms), receptionsLabel(property.receptions)].filter(
+    Boolean,
+  );
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export type OccupancyTone = "emerald" | "amber" | "rose" | "slate";

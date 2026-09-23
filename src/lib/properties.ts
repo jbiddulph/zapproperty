@@ -1,9 +1,11 @@
 import { getServerConfig } from "./config";
 import { demoAssets, demoCreateTask, demoTasksFor } from "./demo-data";
 import { geocodeAddress, normaliseAddress } from "./geocode";
+import { listingFactsFromAsset } from "./listing";
 import type {
   AppStatus,
   GeocodeSource,
+  ListingType,
   LngLat,
   PropertiesResponse,
   Property,
@@ -114,9 +116,7 @@ function toProperty(asset: ZapTaskAsset, coordinates: LngLat | null, geocodeSour
     type: asset.type,
     status: asset.status ?? "active",
     clientId: asset.client_id ?? null,
-    propertyType: asset.property?.property_type ?? null,
-    bedrooms: asset.property?.bedrooms ?? null,
-    tenure: asset.property?.tenure ?? null,
+    ...listingFactsFromAsset(asset),
     occupancyStatus: asset.property?.occupancy_status ?? null,
     address,
     fullAddress: normaliseAddress([address.line1, address.line2, address.city, address.postalCode, address.country]),
@@ -206,14 +206,22 @@ async function buildPropertiesResponse(): Promise<PropertiesResponse> {
   const config = getServerConfig();
   const zt = getClient();
 
-  let assets: ZapTaskAsset[];
+  let fetched: ZapTaskAsset[];
   if (zt) {
-    assets = await zt.listAllAssets({ type: config.zaptask.assetType ?? undefined }, config.zaptask.maxAssets);
+    fetched = await zt.listAllAssets({ type: config.zaptask.assetType ?? undefined }, config.zaptask.maxAssets);
   } else {
-    assets = config.zaptask.assetType
+    fetched = config.zaptask.assetType
       ? demoAssets.filter((a) => a.type === config.zaptask.assetType)
       : demoAssets;
   }
+
+  // The Platform API has no server-side filter for the agent's "Show on
+  // ZapProperty" checkbox, so apply it here — before geocoding, so hidden
+  // sites never cost a Mapbox call.
+  const assets = config.zaptask.includeUnlisted
+    ? fetched
+    : fetched.filter((asset) => asset.property?.listing?.show_on_zapproperty === true);
+  const unlisted = fetched.length - assets.length;
 
   const located = await Promise.all(assets.map((asset) => locate(asset)));
 
@@ -236,6 +244,8 @@ async function buildPropertiesResponse(): Promise<PropertiesResponse> {
       total: properties.length,
       located: properties.filter((p) => p.coordinates).length,
       unlocated: properties.filter((p) => !p.coordinates).length,
+      unlisted,
+      includesUnlisted: config.zaptask.includeUnlisted,
       source: zt ? "zaptask" : "demo",
       assetType: config.zaptask.assetType,
       fetchedAt: new Date().toISOString(),
@@ -245,9 +255,26 @@ async function buildPropertiesResponse(): Promise<PropertiesResponse> {
         occupancyStatuses: distinct((p) => p.occupancyStatus),
         statuses: distinct((p) => p.status),
         types: distinct((p) => p.type),
+        listingTypes: distinct((p) => p.listing?.listingType ?? null) as ListingType[],
+        furnishings: distinct((p) => p.furnishing),
+        priceRange: priceRangeByListingType(properties),
       },
     },
   };
+}
+
+function priceRangeByListingType(properties: Property[]): PropertiesResponse["meta"]["facets"]["priceRange"] {
+  const range: PropertiesResponse["meta"]["facets"]["priceRange"] = {};
+  for (const property of properties) {
+    const type = property.listing?.listingType;
+    const price = property.listing?.comparablePrice;
+    if (!type || price === null || price === undefined) continue;
+    const current = range[type];
+    range[type] = current
+      ? { min: Math.min(current.min, price), max: Math.max(current.max, price) }
+      : { min: price, max: price };
+  }
+  return range;
 }
 
 export async function loadPropertyDetail(id: number): Promise<PropertyDetail | null> {
@@ -260,6 +287,9 @@ export async function loadPropertyDetail(id: number): Promise<PropertyDetail | n
     asset = demoAssets.find((a) => a.id === id) ?? null;
   }
   if (!asset) return null;
+
+  const { zaptask } = getServerConfig();
+  if (!zaptask.includeUnlisted && asset.property?.listing?.show_on_zapproperty !== true) return null;
 
   const { coordinates, source } = await locate(asset);
   const base = toProperty(asset, coordinates, source);

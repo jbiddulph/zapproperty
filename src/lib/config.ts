@@ -10,6 +10,8 @@ export interface ServerConfig {
     assetType: string | null;
     maxAssets: number;
     writeBackGeocode: boolean;
+    /** Show sites even when "Show on ZapProperty" is unticked in ZapTask. */
+    includeUnlisted: boolean;
   };
   mapbox: {
     serverToken: string | null;
@@ -43,7 +45,11 @@ export function getServerConfig(): ServerConfig {
     ? publicToken
     : process.env.MAPBOX_SERVER_TOKEN!.trim();
 
-  const rawType = (process.env.ZAPTASK_ASSET_TYPE ?? "property").trim();
+  // Whether a site appears is decided by the agent's "Show on ZapProperty"
+  // checkbox, not its asset type — a listing can be a property, building,
+  // unit or site in ZapTask. ZAPTASK_ASSET_TYPE remains as an optional extra
+  // restriction.
+  const rawType = (process.env.ZAPTASK_ASSET_TYPE ?? "").trim();
   const assetType = rawType === "" || rawType.toLowerCase() === "all" ? null : rawType;
 
   const maxAssets = Number.parseInt(process.env.ZAPTASK_MAX_ASSETS ?? "1000", 10);
@@ -59,6 +65,7 @@ export function getServerConfig(): ServerConfig {
       assetType,
       maxAssets: Number.isFinite(maxAssets) && maxAssets > 0 ? maxAssets : 1000,
       writeBackGeocode: bool(process.env.ZAPTASK_WRITE_BACK_GEOCODE),
+      includeUnlisted: bool(process.env.ZAPTASK_INCLUDE_UNLISTED),
     },
     mapbox: {
       serverToken,
