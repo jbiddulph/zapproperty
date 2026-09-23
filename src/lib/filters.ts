@@ -9,6 +9,8 @@ export interface Filters {
   /** Comparable price bounds (monthly-equivalent for rentals). */
   minPrice: number | null;
   maxPrice: number | null;
+  /** Agent (company) name, portal mode only. */
+  agent: string;
   furnishing: string;
   tenure: string;
   occupancy: string;
@@ -25,6 +27,7 @@ export const defaultFilters: Filters = {
   minBathrooms: null,
   minPrice: null,
   maxPrice: null,
+  agent: "",
   furnishing: "",
   tenure: "",
   occupancy: "",
@@ -44,6 +47,7 @@ export function countActiveFilters(filters: Filters): number {
   if (filters.minBedrooms !== null) count += 1;
   if (filters.minBathrooms !== null) count += 1;
   if (filters.minPrice !== null || filters.maxPrice !== null) count += 1;
+  if (filters.agent) count += 1;
   if (filters.furnishing) count += 1;
   if (filters.tenure) count += 1;
   if (filters.occupancy) count += 1;
@@ -71,6 +75,7 @@ function matchesQuery(property: Property, query: string): boolean {
     property.furnishing,
     property.occupancyStatus,
     property.listing?.priceLabel,
+    property.agent?.name,
     property.listing?.epcRating ? `epc ${property.listing.epcRating}` : null,
     ...(property.listing?.keyFeatures ?? []),
     String(property.id),
@@ -97,6 +102,7 @@ export function applyFilters(properties: Property[], filters: Filters, bounds: B
     if (filters.status && filters.status !== "all" && property.status !== filters.status) return false;
     if (filters.listingType && property.listing?.listingType !== filters.listingType) return false;
     if (filters.propertyType && property.propertyType !== filters.propertyType) return false;
+    if (filters.agent && property.agent?.name !== filters.agent) return false;
     if (filters.furnishing && property.furnishing !== filters.furnishing) return false;
     if (filters.tenure && property.tenure !== filters.tenure) return false;
     if (filters.occupancy && property.occupancyStatus !== filters.occupancy) return false;

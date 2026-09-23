@@ -43,6 +43,14 @@ export interface PropertyListing {
   description: string | null;
 }
 
+/** The estate agent (ZapTask company) marketing a property. */
+export interface PropertyAgent {
+  id: number;
+  name: string;
+  logoUrl: string | null;
+  website: string | null;
+}
+
 export interface Property {
   id: number;
   name: string;
@@ -50,6 +58,8 @@ export interface Property {
   type: string;
   status: string;
   clientId: number | null;
+  /** Known when reading through the ZapProperty portal; null for a single-company key. */
+  agent: PropertyAgent | null;
   propertyType: string | null;
   bedrooms: number | null;
   bathrooms: number | null;
@@ -109,10 +119,13 @@ export interface PropertiesResponse {
     /** True when unlisted sites are being included (ZAPTASK_INCLUDE_UNLISTED). */
     includesUnlisted: boolean;
     source: "zaptask" | "demo";
+    /** `platform` = portal key across all companies; `company` = one company's key. */
+    scope: "platform" | "company";
     assetType: string | null;
     fetchedAt: string;
     /** Distinct values available for the filter controls. */
     facets: {
+      agents: string[];
       propertyTypes: string[];
       tenures: string[];
       occupancyStatuses: string[];
@@ -130,6 +143,7 @@ export interface AppStatus {
   demo: boolean;
   zaptaskConfigured: boolean;
   zaptaskBaseUrl: string;
+  zaptaskScope: "platform" | "company";
   mapboxConfigured: boolean;
   tasksEnabled: boolean;
 }

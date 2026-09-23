@@ -276,8 +276,10 @@ function StatusPill({ status, source }: { status: AppStatus; source: "zaptask" |
     <span
       title={
         demo
-          ? "Running with sample data. Set ZAPTASK_API_KEY to connect to your ZapTask company."
-          : `Connected to ${host} via the Platform API`
+          ? "Running with sample data. Set ZAPTASK_API_KEY to connect to ZapTask."
+          : status.zaptaskScope === "platform"
+            ? `Connected to ${host} — every listing published to ZapProperty, across all agents`
+            : `Connected to ${host} with a single-company API key`
       }
       className={`hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset sm:inline-flex ${
         demo ? "bg-amber-50 text-amber-800 ring-amber-600/20" : "bg-emerald-50 text-emerald-700 ring-emerald-600/20"

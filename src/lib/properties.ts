@@ -13,7 +13,7 @@ import type {
   PropertyPhoto,
   PropertyTask,
 } from "./types";
-import { ZapTaskClient, type CreateTaskInput, type ZapTaskAsset, type ZapTaskTask } from "./zaptask";
+import { ZapTaskApiError, ZapTaskClient, type CreateTaskInput, type ZapTaskAsset, type ZapTaskTask } from "./zaptask";
 
 const LIST_CACHE_TTL_MS = 60_000;
 
@@ -32,6 +32,7 @@ export function getAppStatus(): AppStatus {
     demo: config.demo,
     zaptaskConfigured: Boolean(config.zaptask.apiKey),
     zaptaskBaseUrl: config.zaptask.baseUrl,
+    zaptaskScope: config.zaptask.scope,
     mapboxConfigured: Boolean(process.env.NEXT_PUBLIC_MAPBOX_TOKEN && !process.env.NEXT_PUBLIC_MAPBOX_TOKEN.includes("replace_me")),
     tasksEnabled: true,
   };
@@ -116,6 +117,14 @@ function toProperty(asset: ZapTaskAsset, coordinates: LngLat | null, geocodeSour
     type: asset.type,
     status: asset.status ?? "active",
     clientId: asset.client_id ?? null,
+    agent: asset.agent
+      ? {
+          id: asset.agent.id,
+          name: asset.agent.name,
+          logoUrl: asset.agent.logo_url ?? null,
+          website: asset.agent.website ?? null,
+        }
+      : null,
     ...listingFactsFromAsset(asset),
     occupancyStatus: asset.property?.occupancy_status ?? null,
     address,
@@ -202,30 +211,47 @@ export async function loadProperties(options: { refresh?: boolean } = {}): Promi
   return listInFlight;
 }
 
+/**
+ * Pulls the candidate sites and applies the "Show on ZapProperty" rule.
+ *
+ * Portal key: ZapTask has already filtered to published listings across all
+ * companies and tells us how many it held back. Company key (or demo): the
+ * company API has no such filter, so apply it here — before geocoding, so
+ * hidden sites never cost a Mapbox call.
+ */
+async function fetchPublished(zt: ZapTaskClient | null): Promise<{ assets: ZapTaskAsset[]; unlisted: number }> {
+  const { zaptask } = getServerConfig();
+  const typeParam = { type: zaptask.assetType ?? undefined };
+
+  if (zt && zaptask.scope === "platform") {
+    const { listings, meta } = await zt.listAllListings(typeParam, zaptask.maxAssets);
+    return { assets: listings, unlisted: meta?.unpublished_total ?? 0 };
+  }
+
+  const fetched = zt
+    ? await zt.listAllAssets(typeParam, zaptask.maxAssets)
+    : zaptask.assetType
+      ? demoAssets.filter((a) => a.type === zaptask.assetType)
+      : demoAssets;
+
+  const assets = zaptask.includeUnlisted
+    ? fetched
+    : fetched.filter((asset) => asset.property?.listing?.show_on_zapproperty === true);
+
+  return { assets, unlisted: fetched.length - assets.length };
+}
+
 async function buildPropertiesResponse(): Promise<PropertiesResponse> {
   const config = getServerConfig();
   const zt = getClient();
+  const platform = config.zaptask.scope === "platform";
 
-  let fetched: ZapTaskAsset[];
-  if (zt) {
-    fetched = await zt.listAllAssets({ type: config.zaptask.assetType ?? undefined }, config.zaptask.maxAssets);
-  } else {
-    fetched = config.zaptask.assetType
-      ? demoAssets.filter((a) => a.type === config.zaptask.assetType)
-      : demoAssets;
-  }
-
-  // The Platform API has no server-side filter for the agent's "Show on
-  // ZapProperty" checkbox, so apply it here — before geocoding, so hidden
-  // sites never cost a Mapbox call.
-  const assets = config.zaptask.includeUnlisted
-    ? fetched
-    : fetched.filter((asset) => asset.property?.listing?.show_on_zapproperty === true);
-  const unlisted = fetched.length - assets.length;
+  const { assets, unlisted } = await fetchPublished(zt);
 
   const located = await Promise.all(assets.map((asset) => locate(asset)));
 
-  if (zt && config.zaptask.writeBackGeocode) {
+  // The portal is read-only across companies; only a company key can PATCH.
+  if (zt && !platform && config.zaptask.writeBackGeocode) {
     await Promise.allSettled(
       assets.map((asset, i) => {
         const { coordinates, source } = located[i];
@@ -245,11 +271,13 @@ async function buildPropertiesResponse(): Promise<PropertiesResponse> {
       located: properties.filter((p) => p.coordinates).length,
       unlocated: properties.filter((p) => !p.coordinates).length,
       unlisted,
-      includesUnlisted: config.zaptask.includeUnlisted,
+      includesUnlisted: !platform && config.zaptask.includeUnlisted,
       source: zt ? "zaptask" : "demo",
+      scope: config.zaptask.scope,
       assetType: config.zaptask.assetType,
       fetchedAt: new Date().toISOString(),
       facets: {
+        agents: distinct((p) => p.agent?.name ?? null),
         propertyTypes: distinct((p) => p.propertyType),
         tenures: distinct((p) => p.tenure),
         occupancyStatuses: distinct((p) => p.occupancyStatus),
@@ -277,19 +305,33 @@ function priceRangeByListingType(properties: Property[]): PropertiesResponse["me
   return range;
 }
 
+/** Portal 404s are the normal "not published / not found" signal, not a failure. */
+async function notFoundToNull<T>(promise: Promise<T>): Promise<T | null> {
+  try {
+    return await promise;
+  } catch (error) {
+    if (error instanceof ZapTaskApiError && error.status === 404) return null;
+    throw error;
+  }
+}
+
 export async function loadPropertyDetail(id: number): Promise<PropertyDetail | null> {
   const zt = getClient();
+  const { zaptask } = getServerConfig();
+  const platform = zaptask.scope === "platform";
 
   let asset: ZapTaskAsset | null;
-  if (zt) {
-    asset = await zt.assets.get(id);
+  if (zt && platform) {
+    asset = await notFoundToNull(zt.listings.get(id));
+  } else if (zt) {
+    asset = await notFoundToNull(zt.assets.get(id));
   } else {
     asset = demoAssets.find((a) => a.id === id) ?? null;
   }
   if (!asset) return null;
 
-  const { zaptask } = getServerConfig();
-  if (!zaptask.includeUnlisted && asset.property?.listing?.show_on_zapproperty !== true) return null;
+  // The portal only ever returns published listings; a company key sees everything.
+  if (!platform && !zaptask.includeUnlisted && asset.property?.listing?.show_on_zapproperty !== true) return null;
 
   const { coordinates, source } = await locate(asset);
   const base = toProperty(asset, coordinates, source);
@@ -310,17 +352,23 @@ export async function loadPropertyDetail(id: number): Promise<PropertyDetail | n
   };
 }
 
+function isPlatformScope(): boolean {
+  return getServerConfig().zaptask.scope === "platform";
+}
+
 export async function fetchPropertyPhoto(assetId: number, photoId: number): Promise<Response | null> {
   const zt = getClient();
   if (!zt) return null;
-  return zt.assets.photo(assetId, photoId);
+  return isPlatformScope() ? zt.listings.photo(assetId, photoId) : zt.assets.photo(assetId, photoId);
 }
 
 export async function loadPropertyTasks(assetId: number): Promise<PropertyTask[]> {
   const zt = getClient();
   if (!zt) return demoTasksFor(assetId).map(toTask);
 
-  const { tasks } = await zt.tasks.list({ asset_id: assetId, per_page: 50 });
+  const { tasks } = isPlatformScope()
+    ? await zt.listings.tasks(assetId, { per_page: 50 })
+    : await zt.tasks.list({ asset_id: assetId, per_page: 50 });
   return tasks.map(toTask);
 }
 
@@ -333,11 +381,14 @@ export async function createPropertyTask(
     return toTask(demoCreateTask({ ...input, asset_id: assetId }));
   }
 
-  const task = await zt.tasks.create({
+  const payload = {
     ...input,
-    asset_id: assetId,
     source: "zapproperty",
     metadata: { app: "zapproperty", ...(input.metadata ?? {}) },
-  });
+  };
+
+  const task = isPlatformScope()
+    ? await zt.listings.createTask(assetId, payload)
+    : await zt.tasks.create({ ...payload, asset_id: assetId });
   return toTask(task);
 }

@@ -1,0 +1,837 @@
+From bff63672bbe52a63c547177fa8cc890ff353c38e Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Wed, 23 Sep 2026 19:25:00 +0000
+Subject: [PATCH] Add the ZapProperty portal API: one platform key, every
+ published listing
+
+Company zt_live_ keys only ever see their own company's sites, so ZapProperty
+(a cross-agency portal) could not show a listing published by a second
+company. Add a platform-level key and a small read API for it.
+
+- ZAPPROPERTY_API_KEY (config services.zapproperty.api_key); generate with
+  `php artisan zapproperty:key` (prefix zp_live_). Unset = portal disabled (503).
+- zapproperty.auth middleware: constant-time compare; company keys are
+  rejected here and the portal key is rejected on company endpoints.
+- GET  /api/v1/zapproperty/listings            active + show_on_zapproperty,
+                                               all companies, + agent,
+                                               meta.unpublished_total
+- GET  /api/v1/zapproperty/listings/{id}       404 unless published
+- GET  /api/v1/zapproperty/listings/{id}/photos/{photoId}
+- GET/POST /api/v1/zapproperty/listings/{id}/tasks   re-enters the listing's
+  company scope (acting as the site's creator) and delegates to TaskController
+- Extract the asset payload into App\Support\AssetPayload so /assets and the
+  portal return the same shape (photo URLs differ per route).
+- Feature tests on Postgres; BUILDERS.md / PLATFORM_V2.md / .env.example.
+---
+ .env.example                                  |   5 +
+ BUILDERS.md                                   |  15 ++
+ PLATFORM_V2.md                                |   2 +
+ .../Commands/GenerateZapPropertyKey.php       |  26 +++
+ .../Controllers/Api/V1/AssetController.php    |  75 +------
+ .../Api/V1/ZapPropertyController.php          | 205 ++++++++++++++++++
+ .../Middleware/AuthenticateZapProperty.php    |  43 ++++
+ app/Support/AssetPayload.php                  |  88 ++++++++
+ bootstrap/app.php                             |   1 +
+ config/services.php                           |   6 +
+ routes/api.php                                |  13 ++
+ tests/Feature/ZapPropertyPortalApiTest.php    | 190 ++++++++++++++++
+ 12 files changed, 600 insertions(+), 69 deletions(-)
+ create mode 100644 app/Console/Commands/GenerateZapPropertyKey.php
+ create mode 100644 app/Http/Controllers/Api/V1/ZapPropertyController.php
+ create mode 100644 app/Http/Middleware/AuthenticateZapProperty.php
+ create mode 100644 app/Support/AssetPayload.php
+ create mode 100644 tests/Feature/ZapPropertyPortalApiTest.php
+
+diff --git a/.env.example b/.env.example
+index ae3c9c1..a145efc 100644
+--- a/.env.example
++++ b/.env.example
+@@ -94,3 +94,8 @@ VITE_MAPBOX_ACCESS_TOKEN=
+ 
+ # Unsplash — Access Key only (from https://unsplash.com/oauth/applications). Secret key is not used.
+ UNSPLASH_ACCESS_KEY=
++
++# ZapProperty portal — one platform key that reads every listing published with
++# "Show on ZapProperty" across all companies (/api/v1/zapproperty/*).
++# Generate with `php artisan zapproperty:key`; set the same value as ZAPTASK_API_KEY on ZapProperty.
++ZAPPROPERTY_API_KEY=
+diff --git a/BUILDERS.md b/BUILDERS.md
+index 072e939..232ddd3 100644
+--- a/BUILDERS.md
++++ b/BUILDERS.md
+@@ -89,6 +89,21 @@ ## Platform capabilities for apps
+ 
+ Company scope is always derived from the API key. **Never** send a trusted `company_id` from the client.
+ 
++### Cross-company portals (ZapProperty)
++
++A consumer that aggregates *every* company — such as the ZapProperty listings portal — cannot use a `zt_live_` key, which only ever sees one company. It uses the platform-level portal key instead:
++
++| | |
++|---|---|
++| Key | `ZAPPROPERTY_API_KEY` on the ZapTask server (generate with `php artisan zapproperty:key`, prefix `zp_live_`). Unset = portal disabled (503). |
++| Auth | `Authorization: Bearer zp_live_…` — rejected on every company endpoint, and company keys are rejected here. |
++| `GET /api/v1/zapproperty/listings` | Every active site with **Show on ZapProperty** ticked, across all companies. Same asset payload as `/assets` plus `agent` (`id`, `name`, `logo_url`, `website`). Filters: `type`, `listing_type`, `company_id`, `updated_since`, `search`; `per_page` ≤ 100. `meta.unpublished_total` counts active sites that are not ticked. |
++| `GET /api/v1/zapproperty/listings/{id}` | Detail incl. `photos[]`; 404 unless published. |
++| `GET /api/v1/zapproperty/listings/{id}/photos/{photoId}` | Photo bytes. |
++| `GET/POST /api/v1/zapproperty/listings/{id}/tasks` | Tasks for a listing, created *inside the listing's company* (as the site's creator), `source` defaults to `zapproperty`. |
++
++Unticking the box on a site removes it from the portal immediately — the filter is applied server-side.
++
+ ## Example specialised consumer
+ 
+ See [`examples/property-ops-app`](examples/property-ops-app) — a small Node app that:
+diff --git a/PLATFORM_V2.md b/PLATFORM_V2.md
+index 23444d9..b665a2b 100644
+--- a/PLATFORM_V2.md
++++ b/PLATFORM_V2.md
+@@ -75,12 +75,14 @@ ## Property MVP
+ - Nav order: Clients → Compliance → Sites
+ - Platform API asset payloads include `property` + `client_id` + `photo_count` / `cover_photo_url`
+ - Companies can enable the `property` platform application
++- **ZapProperty listings**: `show_on_zapproperty` + listing fields on sites; the portal reads them cross-company via `/api/v1/zapproperty/*` with the single `ZAPPROPERTY_API_KEY` (see BUILDERS.md)
+ 
+ ## Auth rules
+ 
+ - Company scope is derived from the authenticated session, Sanctum token, or API key.
+ - Clients must never supply a trusted `company_id`.
+ - Cross-company ID access returns 404.
++- The one exception is the ZapProperty portal key (`zp_live_`), which is read-only across companies for *published* listings and can only write tasks into the listing's own company.
+ 
+ ## Settings surfaces
+ 
+diff --git a/app/Console/Commands/GenerateZapPropertyKey.php b/app/Console/Commands/GenerateZapPropertyKey.php
+new file mode 100644
+index 0000000..0cb0d91
+--- /dev/null
++++ b/app/Console/Commands/GenerateZapPropertyKey.php
+@@ -0,0 +1,26 @@
++<?php
++
++namespace App\Console\Commands;
++
++use Illuminate\Console\Command;
++use Illuminate\Support\Str;
++
++class GenerateZapPropertyKey extends Command
++{
++    protected $signature = 'zapproperty:key';
++
++    protected $description = 'Generate a platform key for the ZapProperty portal (set it as ZAPPROPERTY_API_KEY here and ZAPTASK_API_KEY on ZapProperty)';
++
++    public function handle(): int
++    {
++        $key = 'zp_live_'.Str::random(40);
++
++        $this->line($key);
++        $this->newLine();
++        $this->info('Set it on both sides — it is not stored anywhere by this command:');
++        $this->line("  ZapTask (Heroku):      heroku config:set ZAPPROPERTY_API_KEY={$key}");
++        $this->line("  ZapProperty (Vercel):  ZAPTASK_API_KEY={$key}");
++
++        return self::SUCCESS;
++    }
++}
+diff --git a/app/Http/Controllers/Api/V1/AssetController.php b/app/Http/Controllers/Api/V1/AssetController.php
+index 11fadc7..ee28669 100644
+--- a/app/Http/Controllers/Api/V1/AssetController.php
++++ b/app/Http/Controllers/Api/V1/AssetController.php
+@@ -4,6 +4,7 @@
+ 
+ use App\Models\OperationalObject;
+ use App\Models\Workspace;
++use App\Support\AssetPayload;
+ use App\Support\PropertyListing;
+ use Illuminate\Http\JsonResponse;
+ use Illuminate\Http\Request;
+@@ -229,74 +230,10 @@ private function findCompanyAsset(Request $request, int $id): ?OperationalObject
+ 
+     private function transform(OperationalObject $asset, bool $detailed = false): array
+     {
+-        $cover = $asset->relationLoaded('photos')
+-            ? ($asset->photos->firstWhere('is_cover', true) ?? $asset->photos->first())
+-            : null;
+-
+-        $payload = [
+-            'id' => $asset->id,
+-            'company_id' => $asset->company_id,
+-            'client_id' => $asset->client_id,
+-            'workspace_id' => $asset->workspace_id,
+-            'type' => $asset->type,
+-            'name' => $asset->name,
+-            'reference' => $asset->reference,
+-            'status' => $asset->status ?? ($asset->is_active ? 'active' : 'inactive'),
+-            'property' => [
+-                'property_type' => $asset->property_type,
+-                'bedrooms' => $asset->bedrooms,
+-                'bathrooms' => $asset->bathrooms,
+-                'receptions' => $asset->receptions,
+-                'tenure' => $asset->tenure,
+-                'occupancy_status' => $asset->occupancy_status,
+-                'furnishing' => $asset->furnishing,
+-                'listing' => [
+-                    'show_on_zapproperty' => (bool) $asset->show_on_zapproperty,
+-                    'listing_type' => $asset->listing_type,
+-                    'price_amount' => $asset->price_amount,
+-                    'price_qualifier' => $asset->price_qualifier,
+-                    'price_label' => PropertyListing::formatPrice($asset->price_amount, $asset->price_qualifier),
+-                    'deposit_amount' => $asset->deposit_amount,
+-                    'available_from' => $asset->available_from?->toDateString(),
+-                    'council_tax_band' => $asset->council_tax_band,
+-                    'epc_rating' => $asset->epc_rating,
+-                    'broadband' => $asset->broadband,
+-                    'key_features' => $asset->key_features ?? [],
+-                    'description' => $asset->listing_description,
+-                    'visibility' => PropertyListing::normalizeVisibility($asset->listing_visibility),
+-                ],
+-            ],
+-            'photo_count' => $asset->relationLoaded('photos')
+-                ? $asset->photos->count()
+-                : $asset->photos()->count(),
+-            'cover_photo_url' => $cover
+-                ? url("/api/v1/assets/{$asset->id}/photos/{$cover->id}")
+-                : null,
+-            'metadata' => $asset->metadata,
+-            'address' => [
+-                'line_1' => $asset->address_line_1,
+-                'line_2' => $asset->address_line_2,
+-                'city' => $asset->city,
+-                'postal_code' => $asset->postal_code,
+-                'country' => $asset->country,
+-            ],
+-            'created_at' => optional($asset->created_at)?->toIso8601String(),
+-            'updated_at' => optional($asset->updated_at)?->toIso8601String(),
+-        ];
+-
+-        if ($detailed && $asset->relationLoaded('photos')) {
+-            $payload['photos'] = $asset->photos->map(fn ($photo) => [
+-                'id' => $photo->id,
+-                'caption' => $photo->caption,
+-                'is_cover' => (bool) $photo->is_cover,
+-                'sort_order' => $photo->sort_order,
+-                'original_filename' => $photo->original_filename,
+-                'mime_type' => $photo->mime_type,
+-                'file_size' => $photo->file_size,
+-                'url' => url("/api/v1/assets/{$asset->id}/photos/{$photo->id}"),
+-            ])->values()->all();
+-        }
+-
+-        return $payload;
++        return AssetPayload::make(
++            $asset,
++            fn (OperationalObject $a, $photo) => url("/api/v1/assets/{$a->id}/photos/{$photo->id}"),
++            $detailed,
++        );
+     }
+ }
+diff --git a/app/Http/Controllers/Api/V1/ZapPropertyController.php b/app/Http/Controllers/Api/V1/ZapPropertyController.php
+new file mode 100644
+index 0000000..474695b
+--- /dev/null
++++ b/app/Http/Controllers/Api/V1/ZapPropertyController.php
+@@ -0,0 +1,205 @@
++<?php
++
++namespace App\Http\Controllers\Api\V1;
++
++use App\Models\Company;
++use App\Models\OperationalObject;
++use App\Models\OperationalObjectPhoto;
++use App\Models\User;
++use App\Support\AssetPayload;
++use Illuminate\Database\Eloquent\Builder;
++use Illuminate\Http\JsonResponse;
++use Illuminate\Http\Request;
++use Illuminate\Support\Facades\Storage;
++
++/**
++ * ZapProperty portal API — everything an agent has published with
++ * "Show on ZapProperty", across every company, behind one platform key.
++ *
++ * Reads are cross-company by design. Task endpoints re-enter the company
++ * scope of the listing's owner so ZapProperty visitors can raise viewings
++ * or enquiries that land in the right agency's ZapTask.
++ */
++class ZapPropertyController extends PlatformController
++{
++    public function __construct(
++        protected TaskController $tasks,
++    ) {}
++
++    public function index(Request $request): JsonResponse
++    {
++        $query = $this->published()
++            ->with(['company', 'workspace', 'photos'])
++            ->orderBy('company_id')
++            ->orderBy('name');
++
++        if ($request->filled('type')) {
++            $query->where('type', $request->type);
++        }
++
++        if ($request->filled('listing_type')) {
++            $query->where('listing_type', $request->listing_type);
++        }
++
++        if ($request->filled('company_id')) {
++            $query->where('company_id', (int) $request->company_id);
++        }
++
++        if ($request->filled('updated_since')) {
++            $query->where('updated_at', '>=', $request->updated_since);
++        }
++
++        if ($request->filled('search')) {
++            $search = $request->search;
++            $query->where(function ($q) use ($search) {
++                $q->where('name', 'ilike', "%{$search}%")
++                    ->orWhere('reference', 'ilike', "%{$search}%")
++                    ->orWhere('postal_code', 'ilike', "%{$search}%")
++                    ->orWhere('city', 'ilike', "%{$search}%");
++            });
++        }
++
++        $perPage = min((int) $request->get('per_page', 25), 100);
++        $paginator = $query->paginate($perPage);
++
++        return $this->ok([
++            'listings' => collect($paginator->items())
++                ->map(fn (OperationalObject $asset) => $this->transform($asset))
++                ->values(),
++            'meta' => [
++                'current_page' => $paginator->currentPage(),
++                'per_page' => $paginator->perPage(),
++                'total' => $paginator->total(),
++                'last_page' => $paginator->lastPage(),
++                // Active sites that exist but are not ticked — lets the portal
++                // explain "nothing here yet" without exposing them.
++                'unpublished_total' => OperationalObject::query()
++                    ->where('is_active', true)
++                    ->where(fn (Builder $q) => $q->whereNull('show_on_zapproperty')->orWhere('show_on_zapproperty', false))
++                    ->count(),
++            ],
++        ]);
++    }
++
++    public function show(int $id): JsonResponse
++    {
++        $asset = $this->findPublished($id);
++        if (! $asset) {
++            return $this->fail('Listing not found.', 404);
++        }
++
++        $asset->load(['company', 'workspace', 'photos']);
++
++        return $this->ok($this->transform($asset, true));
++    }
++
++    public function photo(int $id, int $photoId)
++    {
++        $asset = $this->findPublished($id);
++        if (! $asset) {
++            return $this->fail('Listing not found.', 404);
++        }
++
++        $photo = $asset->photos()->where('id', $photoId)->first();
++        if (! $photo || ! Storage::disk('private')->exists($photo->file_path)) {
++            return $this->fail('Photo not found.', 404);
++        }
++
++        return Storage::disk('private')->response($photo->file_path, $photo->original_filename, [
++            'Content-Type' => $photo->mime_type,
++            'Cache-Control' => 'private, max-age=3600',
++        ]);
++    }
++
++    public function tasks(Request $request, int $id): JsonResponse
++    {
++        $asset = $this->findPublished($id);
++        if (! $asset) {
++            return $this->fail('Listing not found.', 404);
++        }
++
++        if (! $this->enterCompanyScope($request, $asset)) {
++            return $this->fail('Listing company has no users.', 403);
++        }
++
++        $request->merge(['asset_id' => $asset->id]);
++
++        return $this->tasks->index($request);
++    }
++
++    public function storeTask(Request $request, int $id): JsonResponse
++    {
++        $asset = $this->findPublished($id);
++        if (! $asset) {
++            return $this->fail('Listing not found.', 404);
++        }
++
++        if (! $this->enterCompanyScope($request, $asset)) {
++            return $this->fail('Listing company has no users.', 403);
++        }
++
++        $request->merge([
++            'asset_id' => $asset->id,
++            'source' => $request->input('source', 'zapproperty'),
++        ]);
++
++        return $this->tasks->store($request);
++    }
++
++    private function published(): Builder
++    {
++        return OperationalObject::query()
++            ->where('is_active', true)
++            ->where('show_on_zapproperty', true);
++    }
++
++    private function findPublished(int $id): ?OperationalObject
++    {
++        return $this->published()->where('id', $id)->first();
++    }
++
++    /**
++     * Tasks are always created inside a company. Act as the listing's owner
++     * (or the company's first user) so TaskController's scoping and activity
++     * logging behave exactly as they do for a company API key.
++     */
++    private function enterCompanyScope(Request $request, OperationalObject $asset): bool
++    {
++        $actor = $asset->createdBy;
++        if (! $actor instanceof User || (int) $actor->company_id !== (int) $asset->company_id) {
++            $actor = User::query()
++                ->where('company_id', $asset->company_id)
++                ->orderBy('created_at')
++                ->first();
++        }
++
++        if (! $actor) {
++            return false;
++        }
++
++        $request->attributes->set('platform_company_id', (int) $asset->company_id);
++        $request->attributes->set('platform_user', $actor);
++        $request->setUserResolver(fn () => $actor);
++
++        return true;
++    }
++
++    private function transform(OperationalObject $asset, bool $detailed = false): array
++    {
++        $payload = AssetPayload::make(
++            $asset,
++            fn (OperationalObject $a, OperationalObjectPhoto $photo) => url("/api/v1/zapproperty/listings/{$a->id}/photos/{$photo->id}"),
++            $detailed,
++        );
++
++        $company = $asset->relationLoaded('company') ? $asset->company : null;
++        $payload['agent'] = $company instanceof Company ? [
++            'id' => $company->id,
++            'name' => $company->name,
++            'logo_url' => $company->logo_url,
++            'website' => $company->is_public ? $company->subdomain_url : null,
++        ] : null;
++
++        return $payload;
++    }
++}
+diff --git a/app/Http/Middleware/AuthenticateZapProperty.php b/app/Http/Middleware/AuthenticateZapProperty.php
+new file mode 100644
+index 0000000..cf4372c
+--- /dev/null
++++ b/app/Http/Middleware/AuthenticateZapProperty.php
+@@ -0,0 +1,43 @@
++<?php
++
++namespace App\Http\Middleware;
++
++use Closure;
++use Illuminate\Http\Request;
++use Symfony\Component\HttpFoundation\Response;
++
++/**
++ * Authenticates the ZapProperty portal — a single platform-level key
++ * (ZAPPROPERTY_API_KEY) that may read every listing an agent has published
++ * with "Show on ZapProperty", across all companies.
++ *
++ * Deliberately separate from platform.auth: company zt_live_ keys stay
++ * company-scoped, and this key is never accepted on company endpoints.
++ */
++class AuthenticateZapProperty
++{
++    public function handle(Request $request, Closure $next): Response
++    {
++        $expected = (string) config('services.zapproperty.api_key');
++
++        if ($expected === '') {
++            return response()->json([
++                'success' => false,
++                'message' => 'ZapProperty portal is not enabled on this ZapTask (ZAPPROPERTY_API_KEY is not set).',
++            ], 503);
++        }
++
++        $bearer = (string) $request->bearerToken();
++
++        if ($bearer === '' || ! hash_equals($expected, $bearer)) {
++            return response()->json([
++                'success' => false,
++                'message' => 'Invalid ZapProperty portal key.',
++            ], 401);
++        }
++
++        $request->attributes->set('platform_auth_type', 'zapproperty');
++
++        return $next($request);
++    }
++}
+diff --git a/app/Support/AssetPayload.php b/app/Support/AssetPayload.php
+new file mode 100644
+index 0000000..a73bda2
+--- /dev/null
++++ b/app/Support/AssetPayload.php
+@@ -0,0 +1,88 @@
++<?php
++
++namespace App\Support;
++
++use App\Models\OperationalObject;
++use App\Models\OperationalObjectPhoto;
++
++/**
++ * Builds the platform Asset payload. Shared by the company-scoped
++ * /api/v1/assets endpoints and the cross-company ZapProperty portal, so both
++ * return the same shape and only differ in which photo route they link to.
++ */
++class AssetPayload
++{
++    /**
++     * @param  callable(OperationalObject, OperationalObjectPhoto): string  $photoUrl
++     */
++    public static function make(OperationalObject $asset, callable $photoUrl, bool $detailed = false): array
++    {
++        $cover = $asset->relationLoaded('photos')
++            ? ($asset->photos->firstWhere('is_cover', true) ?? $asset->photos->first())
++            : null;
++
++        $payload = [
++            'id' => $asset->id,
++            'company_id' => $asset->company_id,
++            'client_id' => $asset->client_id,
++            'workspace_id' => $asset->workspace_id,
++            'type' => $asset->type,
++            'name' => $asset->name,
++            'reference' => $asset->reference,
++            'status' => $asset->status ?? ($asset->is_active ? 'active' : 'inactive'),
++            'property' => [
++                'property_type' => $asset->property_type,
++                'bedrooms' => $asset->bedrooms,
++                'bathrooms' => $asset->bathrooms,
++                'receptions' => $asset->receptions,
++                'tenure' => $asset->tenure,
++                'occupancy_status' => $asset->occupancy_status,
++                'furnishing' => $asset->furnishing,
++                'listing' => [
++                    'show_on_zapproperty' => (bool) $asset->show_on_zapproperty,
++                    'listing_type' => $asset->listing_type,
++                    'price_amount' => $asset->price_amount,
++                    'price_qualifier' => $asset->price_qualifier,
++                    'price_label' => PropertyListing::formatPrice($asset->price_amount, $asset->price_qualifier),
++                    'deposit_amount' => $asset->deposit_amount,
++                    'available_from' => $asset->available_from?->toDateString(),
++                    'council_tax_band' => $asset->council_tax_band,
++                    'epc_rating' => $asset->epc_rating,
++                    'broadband' => $asset->broadband,
++                    'key_features' => $asset->key_features ?? [],
++                    'description' => $asset->listing_description,
++                    'visibility' => PropertyListing::normalizeVisibility($asset->listing_visibility),
++                ],
++            ],
++            'photo_count' => $asset->relationLoaded('photos')
++                ? $asset->photos->count()
++                : $asset->photos()->count(),
++            'cover_photo_url' => $cover ? $photoUrl($asset, $cover) : null,
++            'metadata' => $asset->metadata,
++            'address' => [
++                'line_1' => $asset->address_line_1,
++                'line_2' => $asset->address_line_2,
++                'city' => $asset->city,
++                'postal_code' => $asset->postal_code,
++                'country' => $asset->country,
++            ],
++            'created_at' => optional($asset->created_at)?->toIso8601String(),
++            'updated_at' => optional($asset->updated_at)?->toIso8601String(),
++        ];
++
++        if ($detailed && $asset->relationLoaded('photos')) {
++            $payload['photos'] = $asset->photos->map(fn (OperationalObjectPhoto $photo) => [
++                'id' => $photo->id,
++                'caption' => $photo->caption,
++                'is_cover' => (bool) $photo->is_cover,
++                'sort_order' => $photo->sort_order,
++                'original_filename' => $photo->original_filename,
++                'mime_type' => $photo->mime_type,
++                'file_size' => $photo->file_size,
++                'url' => $photoUrl($asset, $photo),
++            ])->values()->all();
++        }
++
++        return $payload;
++    }
++}
+diff --git a/bootstrap/app.php b/bootstrap/app.php
+index 5eafb8b..446c89b 100644
+--- a/bootstrap/app.php
++++ b/bootstrap/app.php
+@@ -60,6 +60,7 @@
+             'subdomain' => SubdomainMiddleware::class,
+             'n8n.webhook' => \App\Http\Middleware\VerifyN8nWebhookSecret::class,
+             'platform.auth' => \App\Http\Middleware\AuthenticatePlatformApi::class,
++            'zapproperty.auth' => \App\Http\Middleware\AuthenticateZapProperty::class,
+         ]);
+ 
+         $middleware->trustProxies(at: '*');
+diff --git a/config/services.php b/config/services.php
+index f7007f7..f02d23e 100644
+--- a/config/services.php
++++ b/config/services.php
+@@ -71,4 +71,10 @@
+         'access_key' => env('UNSPLASH_ACCESS_KEY'),
+     ],
+ 
++    // Platform-level key for the ZapProperty portal (/api/v1/zapproperty/*).
++    // Generate with `php artisan zapproperty:key`. Unset = portal disabled.
++    'zapproperty' => [
++        'api_key' => env('ZAPPROPERTY_API_KEY'),
++    ],
++
+ ];
+diff --git a/routes/api.php b/routes/api.php
+index 71a5325..f0af196 100644
+--- a/routes/api.php
++++ b/routes/api.php
+@@ -29,6 +29,7 @@
+ use App\Http\Controllers\Api\V1\TaskController as V1TaskController;
+ use App\Http\Controllers\Api\V1\UserController as V1UserController;
+ use App\Http\Controllers\Api\V1\WorkspaceController as V1WorkspaceController;
++use App\Http\Controllers\Api\V1\ZapPropertyController as V1ZapPropertyController;
+ use Illuminate\Http\Request;
+ use Illuminate\Support\Facades\Route;
+ 
+@@ -140,6 +141,18 @@
+         // AI as a service for specialised apps (preview → confirm)
+         Route::post('ai', [V1AiController::class, 'handle'])
+             ->middleware('platform.auth:ai.write');
++
++        // ZapProperty portal — one platform key (ZAPPROPERTY_API_KEY), every
++        // listing published with "Show on ZapProperty", across all companies.
++        Route::prefix('zapproperty')
++            ->middleware('zapproperty.auth')
++            ->group(function () {
++                Route::get('listings', [V1ZapPropertyController::class, 'index']);
++                Route::get('listings/{id}', [V1ZapPropertyController::class, 'show']);
++                Route::get('listings/{id}/photos/{photoId}', [V1ZapPropertyController::class, 'photo']);
++                Route::get('listings/{id}/tasks', [V1ZapPropertyController::class, 'tasks']);
++                Route::post('listings/{id}/tasks', [V1ZapPropertyController::class, 'storeTask']);
++            });
+     });
+ 
+ /*
+diff --git a/tests/Feature/ZapPropertyPortalApiTest.php b/tests/Feature/ZapPropertyPortalApiTest.php
+new file mode 100644
+index 0000000..9ee5d3a
+--- /dev/null
++++ b/tests/Feature/ZapPropertyPortalApiTest.php
+@@ -0,0 +1,190 @@
++<?php
++
++namespace Tests\Feature;
++
++use App\Models\ApiKey;
++use App\Models\Company;
++use App\Models\OperationalObject;
++use App\Models\Project;
++use App\Models\ProjectGroup;
++use App\Models\User;
++use Illuminate\Foundation\Testing\RefreshDatabase;
++use Illuminate\Http\UploadedFile;
++use Illuminate\Support\Facades\Storage;
++use Tests\TestCase;
++
++class ZapPropertyPortalApiTest extends TestCase
++{
++    use RefreshDatabase;
++
++    private const KEY = 'zp_live_test_portal_key';
++
++    protected function setUp(): void
++    {
++        parent::setUp();
++        config(['services.zapproperty.api_key' => self::KEY]);
++    }
++
++    /**
++     * @return array{0: Company, 1: User}
++     */
++    private function createAgency(string $name): array
++    {
++        $company = Company::create([
++            'name' => $name,
++            'code' => strtoupper(substr(preg_replace('/\W/', '', $name), 0, 4)).random_int(1000, 9999),
++            'subscription_type' => 'MAXI',
++            'industry' => 'estate-agents',
++        ]);
++        $user = User::factory()->create(['company_id' => $company->id]);
++
++        return [$company, $user];
++    }
++
++    private function createSite(Company $company, User $user, string $name, bool $published, array $extra = []): OperationalObject
++    {
++        return OperationalObject::create(array_merge([
++            'company_id' => $company->id,
++            'created_by_user_id' => $user->id,
++            'type' => 'property',
++            'name' => $name,
++            'status' => 'active',
++            'is_active' => true,
++            'show_on_zapproperty' => $published,
++            'listing_type' => 'rent',
++            'price_amount' => 1750,
++            'price_qualifier' => 'pcm',
++        ], $extra));
++    }
++
++    private function portal()
++    {
++        return $this->withHeader('Authorization', 'Bearer '.self::KEY);
++    }
++
++    public function test_portal_lists_published_sites_from_every_company(): void
++    {
++        [$agencyA, $userA] = $this->createAgency('Worthing Lets');
++        [$agencyB, $userB] = $this->createAgency('Brighton Homes');
++
++        $this->createSite($agencyA, $userA, 'Belsize Road', true);
++        $this->createSite($agencyA, $userA, 'Hidden Flat', false);
++        $this->createSite($agencyB, $userB, 'Rectory Road', true, ['type' => 'unit']);
++        $this->createSite($agencyB, $userB, 'Deactivated', true, ['is_active' => false]);
++
++        $response = $this->portal()->getJson('/api/v1/zapproperty/listings')
++            ->assertOk()
++            ->assertJsonPath('data.meta.total', 2)
++            ->assertJsonPath('data.meta.unpublished_total', 1);
++
++        $names = collect($response->json('data.listings'))->pluck('name')->sort()->values()->all();
++        $this->assertSame(['Belsize Road', 'Rectory Road'], $names);
++
++        $rectory = collect($response->json('data.listings'))->firstWhere('name', 'Rectory Road');
++        $this->assertSame('Brighton Homes', $rectory['agent']['name']);
++        $this->assertSame($agencyB->id, $rectory['agent']['id']);
++        $this->assertTrue($rectory['property']['listing']['show_on_zapproperty']);
++        $this->assertSame('£1,750 pcm', $rectory['property']['listing']['price_label']);
++    }
++
++    public function test_portal_detail_returns_only_published_sites(): void
++    {
++        [$agency, $user] = $this->createAgency('Worthing Lets');
++        $published = $this->createSite($agency, $user, 'Belsize Road', true);
++        $hidden = $this->createSite($agency, $user, 'Hidden Flat', false);
++
++        $this->portal()->getJson("/api/v1/zapproperty/listings/{$published->id}")
++            ->assertOk()
++            ->assertJsonPath('data.name', 'Belsize Road')
++            ->assertJsonPath('data.agent.name', 'Worthing Lets')
++            ->assertJsonPath('data.photos', []);
++
++        $this->portal()->getJson("/api/v1/zapproperty/listings/{$hidden->id}")
++            ->assertNotFound();
++    }
++
++    public function test_portal_photo_urls_point_at_the_portal_and_stream(): void
++    {
++        Storage::fake('private');
++        [$agency, $user] = $this->createAgency('Worthing Lets');
++        $site = $this->createSite($agency, $user, 'Belsize Road', true);
++
++        $this->actingAs($user)->post("/sites/{$site->id}/photos", [
++            'photos' => [UploadedFile::fake()->image('front.jpg', 320, 240)],
++        ]);
++        $photo = $site->photos()->firstOrFail();
++
++        $expected = url("/api/v1/zapproperty/listings/{$site->id}/photos/{$photo->id}");
++
++        $this->portal()->getJson("/api/v1/zapproperty/listings/{$site->id}")
++            ->assertOk()
++            ->assertJsonPath('data.cover_photo_url', $expected)
++            ->assertJsonPath('data.photos.0.url', $expected);
++
++        $this->portal()->get("/api/v1/zapproperty/listings/{$site->id}/photos/{$photo->id}")
++            ->assertOk()
++            ->assertHeader('Content-Type', $photo->mime_type);
++    }
++
++    public function test_portal_rejects_missing_wrong_and_company_keys(): void
++    {
++        [$agency, $user] = $this->createAgency('Worthing Lets');
++        $this->createSite($agency, $user, 'Belsize Road', true);
++
++        $this->getJson('/api/v1/zapproperty/listings')->assertUnauthorized();
++
++        $this->withHeader('Authorization', 'Bearer zp_live_wrong')
++            ->getJson('/api/v1/zapproperty/listings')
++            ->assertUnauthorized();
++
++        $companyKey = ApiKey::generate($agency, 'Integration', $user)['plain_text_key'];
++        $this->withHeader('Authorization', 'Bearer '.$companyKey)
++            ->getJson('/api/v1/zapproperty/listings')
++            ->assertUnauthorized();
++
++        // …and the portal key is not a company key.
++        $this->portal()->getJson('/api/v1/assets')->assertUnauthorized();
++    }
++
++    public function test_portal_is_disabled_until_a_key_is_configured(): void
++    {
++        config(['services.zapproperty.api_key' => null]);
++
++        $this->portal()->getJson('/api/v1/zapproperty/listings')
++            ->assertStatus(503);
++    }
++
++    public function test_portal_tasks_are_created_in_the_listing_owners_company(): void
++    {
++        [$agency, $user] = $this->createAgency('Brighton Homes');
++        $project = Project::create([
++            'name' => 'Lettings',
++            'key' => 'LET',
++            'color' => '#3B82F6',
++            'owner_id' => $user->id,
++            'company_id' => $agency->id,
++        ]);
++        ProjectGroup::createDefaultForProject($project);
++        $site = $this->createSite($agency, $user, 'Rectory Road', true);
++
++        $this->portal()->postJson("/api/v1/zapproperty/listings/{$site->id}/tasks", [
++            'title' => 'Viewing request: Saturday 10am',
++            'priority' => 'normal',
++        ])
++            ->assertCreated()
++            ->assertJsonPath('data.title', 'Viewing request: Saturday 10am')
++            ->assertJsonPath('data.source', 'zapproperty')
++            ->assertJsonPath('data.asset_id', $site->id);
++
++        $this->assertDatabaseHas('taskit_todos', [
++            'company_id' => $agency->id,
++            'operational_object_id' => $site->id,
++            'title' => 'Viewing request: Saturday 10am',
++        ]);
++
++        $this->portal()->getJson("/api/v1/zapproperty/listings/{$site->id}/tasks")
++            ->assertOk()
++            ->assertJsonPath('data.meta.total', 1)
++            ->assertJsonPath('data.tasks.0.title', 'Viewing request: Saturday 10am');
++    }
++}
+-- 
+2.43.0
+
