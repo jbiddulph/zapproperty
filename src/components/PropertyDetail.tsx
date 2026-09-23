@@ -202,6 +202,34 @@ export function PropertyDetail({ property, demo, onClose, onLocate }: PropertyDe
             </p>
           )}
 
+          {data.agent && (
+            <div className="mt-4 flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">
+              {data.agent.logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- agent logos live on arbitrary hosts
+                <img src={data.agent.logoUrl} alt="" className="h-8 w-8 rounded object-contain" />
+              ) : (
+                <span className="flex h-8 w-8 items-center justify-center rounded bg-brand-50 text-sm font-semibold text-brand-700">
+                  {data.agent.name.charAt(0).toUpperCase()}
+                </span>
+              )}
+              <div className="min-w-0 leading-tight">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">Marketed by</div>
+                {data.agent.website ? (
+                  <a
+                    href={data.agent.website}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="truncate text-sm font-medium text-brand-700 hover:underline"
+                  >
+                    {data.agent.name}
+                  </a>
+                ) : (
+                  <div className="truncate text-sm font-medium text-slate-800">{data.agent.name}</div>
+                )}
+              </div>
+            </div>
+          )}
+
           <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
             <Fact label="Property type" value={data.propertyType ? humanize(data.propertyType) : null} />
             <Fact label="Bedrooms" value={bedroomsLabel(data.bedrooms)} />

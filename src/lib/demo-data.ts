@@ -127,9 +127,21 @@ function demoListing(seed: DemoSeed): ZapTaskListing {
   };
 }
 
+/**
+ * Demo mode mimics the portal: listings from several agencies, keyed off the
+ * seed's clientId so each agency has a consistent portfolio.
+ */
+const demoAgents: Record<number, ZapTaskAsset["agent"]> = {
+  1: { id: 1, name: "Brunswick & Co", logo_url: null, website: null },
+  2: { id: 2, name: "Seven Dials Residential", logo_url: null, website: null },
+  3: { id: 3, name: "Preston Park Lettings", logo_url: null, website: null },
+  4: { id: 4, name: "Coastway Property", logo_url: null, website: null },
+};
+
 export const demoAssets: ZapTaskAsset[] = seeds.map((s, index) => ({
   id: s.id,
-  company_id: 1,
+  company_id: s.clientId,
+  agent: demoAgents[s.clientId] ?? null,
   client_id: s.clientId,
   workspace_id: null,
   type: s.type ?? "property",

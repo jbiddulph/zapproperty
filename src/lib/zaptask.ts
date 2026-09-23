@@ -3,8 +3,21 @@
  *
  * Mirrors the surface of `@zaptask/sdk` for the endpoints this app uses so
  * it can be swapped for the published SDK without touching call sites.
- * Company scope is derived from the `zt_live_*` key — never send company_id.
+ *
+ * Two families of endpoint:
+ * - `listings` — the ZapProperty portal (`/api/v1/zapproperty/*`), unlocked by
+ *   the platform key; every published listing across all companies.
+ * - `assets` / `tasks` — the company-scoped API unlocked by a `zt_live_*` key.
+ *   Scope is derived from the key — never send company_id.
  */
+
+/** The company that owns a listing, as exposed by the portal. */
+export interface ZapTaskAgent {
+  id: number;
+  name: string;
+  logo_url?: string | null;
+  website?: string | null;
+}
 
 export interface ZapTaskAsset {
   id: number;
@@ -38,6 +51,8 @@ export interface ZapTaskAsset {
   };
   created_at?: string;
   updated_at?: string;
+  /** Portal responses only. */
+  agent?: ZapTaskAgent | null;
 }
 
 /**
@@ -128,6 +143,8 @@ export interface PageMeta {
   per_page: number;
   total: number;
   last_page: number;
+  /** Portal only: active sites whose "Show on ZapProperty" box is unticked. */
+  unpublished_total?: number;
 }
 
 interface ApiEnvelope<T> {
@@ -184,18 +201,58 @@ export class ZapTaskClient {
   };
 
   /**
+   * ZapProperty portal: published listings across every company. Already
+   * filtered to `show_on_zapproperty = true` on the server.
+   */
+  readonly listings = {
+    list: (params?: QueryParams) =>
+      this.get<{ listings: ZapTaskAsset[]; meta: PageMeta }>("/api/v1/zapproperty/listings", params),
+    get: (id: number) => this.get<ZapTaskAsset>(`/api/v1/zapproperty/listings/${id}`),
+    photo: (listingId: number, photoId: number) =>
+      this.raw(`/api/v1/zapproperty/listings/${listingId}/photos/${photoId}`),
+    tasks: (listingId: number, params?: QueryParams) =>
+      this.get<{ tasks: ZapTaskTask[]; meta: PageMeta }>(`/api/v1/zapproperty/listings/${listingId}/tasks`, params),
+    createTask: (listingId: number, input: Omit<CreateTaskInput, "asset_id">) =>
+      this.request<ZapTaskTask>(`/api/v1/zapproperty/listings/${listingId}/tasks`, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+  };
+
+  /**
    * Walks every page of `/api/v1/assets` up to `limit` records. The platform
    * caps `per_page` at 100.
    */
   async listAllAssets(params: QueryParams, limit: number): Promise<ZapTaskAsset[]> {
-    const all: ZapTaskAsset[] = [];
+    return this.paginate(limit, async (page, perPage) => {
+      const { assets, meta } = await this.assets.list({ ...params, page, per_page: perPage });
+      return { items: assets, meta };
+    });
+  }
+
+  /** Same walk for the portal. Returns the items plus the last page's meta. */
+  async listAllListings(params: QueryParams, limit: number): Promise<{ listings: ZapTaskAsset[]; meta: PageMeta | null }> {
+    let lastMeta: PageMeta | null = null;
+    const listings = await this.paginate(limit, async (page, perPage) => {
+      const { listings, meta } = await this.listings.list({ ...params, page, per_page: perPage });
+      lastMeta = meta ?? null;
+      return { items: listings, meta };
+    });
+    return { listings, meta: lastMeta };
+  }
+
+  private async paginate<T>(
+    limit: number,
+    fetchPage: (page: number, perPage: number) => Promise<{ items: T[]; meta: PageMeta | undefined }>,
+  ): Promise<T[]> {
+    const all: T[] = [];
     let page = 1;
 
     while (all.length < limit) {
       const perPage = Math.min(100, limit - all.length);
-      const { assets, meta } = await this.assets.list({ ...params, page, per_page: perPage });
-      all.push(...assets);
-      if (!meta || page >= meta.last_page || assets.length === 0) break;
+      const { items, meta } = await fetchPage(page, perPage);
+      all.push(...items);
+      if (!meta || page >= meta.last_page || items.length === 0) break;
       page += 1;
     }
 

@@ -48,6 +48,7 @@ export function FilterBar({ filters, facets, sort, onChange, onSortChange, unloc
 
   const moreCount =
     (filters.minBathrooms !== null ? 1 : 0) +
+    (filters.agent ? 1 : 0) +
     (filters.furnishing ? 1 : 0) +
     (filters.tenure ? 1 : 0) +
     (filters.occupancy ? 1 : 0) +
@@ -216,6 +217,20 @@ export function FilterBar({ filters, facets, sort, onChange, onSortChange, unloc
                 <option value="3">3+</option>
               </select>
             </label>
+
+            {facets && facets.agents.length > 1 && (
+              <label className="block">
+                <Label>Agent</Label>
+                <select className={selectClass} value={filters.agent} onChange={(e) => set("agent", e.target.value)}>
+                  <option value="">Any agent</option>
+                  {facets.agents.map((a) => (
+                    <option key={a} value={a}>
+                      {a}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
 
             <label className="block">
               <Label>Furnishing</Label>

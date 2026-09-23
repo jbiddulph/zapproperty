@@ -93,6 +93,12 @@ export function PropertyCard({ property, selected, hovered, onSelect, onHover }:
             {property.reference && <span className="font-mono text-[11px] text-slate-400">{property.reference}</span>}
           </div>
 
+          {property.agent && (
+            <p className="mt-1.5 truncate text-[11px] text-slate-500" title={`Marketed by ${property.agent.name}`}>
+              Marketed by <span className="font-medium text-slate-700">{property.agent.name}</span>
+            </p>
+          )}
+
           {!property.listed && (
             <p className="mt-1.5 inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
               Not published to ZapProperty
